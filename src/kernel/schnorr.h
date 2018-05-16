@@ -64,6 +64,12 @@ public:
     */
     bool verify(const std::string& message, const std::string& signature);
 
+    int xmusig_verify(const schnorr_context* ctx,
+                 const musig_sig* sig,
+                 const musig_pubkey* pubkey,
+                 const unsigned char* msg,
+                 const size_t len);
+
     /**
     * Returns the public key of the instance
     *

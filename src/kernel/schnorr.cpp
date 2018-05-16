@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <cstring>
+#include <cstdio>
 
 #include "schnorr.h"
 #include "base64.h"
@@ -72,12 +73,17 @@ bool CryptoKernel::Schnorr::verify(const std::string& message,
         return false;
     }
 
-    if (musig_verify(
+    if (xmusig_verify(
         ctx,
         sig,
         key->pub,
         (unsigned char*)message.c_str(),
         message.size()) != 1) {
+
+        printf("\nverify sig->s: %s\n", BN_bn2hex(sig->s));
+        printf("verify sig->R: %s\n", EC_POINT_point2hex(ctx->group, sig->R, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+        printf("verify pub->A: %s\n", EC_POINT_point2hex(ctx->group, key->pub->A, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+        printf("verify pub->R: %s\n", EC_POINT_point2hex(ctx->group, key->pub->R, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
 
         return false;
     }
@@ -105,6 +111,19 @@ std::string CryptoKernel::Schnorr::sign(const std::string& message) {
 
             throw std::runtime_error("Could not sign message");
         } else {
+            if (xmusig_verify(
+                    ctx,
+                    sig,
+                    key->pub,
+                    (unsigned char*)message.c_str(),
+                    message.size()) != 1) {
+
+                printf("\nsign sig->s: %s\n", BN_bn2hex(sig->s));
+                printf("sign sig->R: %s\n", EC_POINT_point2hex(ctx->group, sig->R, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+                printf("sign pub->A: %s\n", EC_POINT_point2hex(ctx->group, key->pub->A, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+                printf("sign pub->R: %s\n", EC_POINT_point2hex(ctx->group, key->pub->R, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+            }
+
             unsigned int buf_len = 65;
             unsigned char *buf;
             buf = new unsigned char[buf_len];
@@ -135,11 +154,111 @@ std::string CryptoKernel::Schnorr::sign(const std::string& message) {
     }
 }
 
+
+int CryptoKernel::Schnorr::xmusig_verify(const schnorr_context* ctx,
+                 const musig_sig* sig,
+                 const musig_pubkey* pubkey,
+                 const unsigned char* msg,
+                 const size_t len) {
+    EC_POINT* sG = NULL;
+    EC_POINT* HX = NULL;
+    BIGNUM* tmp = NULL;
+    int error = 0;
+
+    sG = EC_POINT_new(ctx->group);
+    if (sG == NULL) {
+        return -1;
+    }
+
+    if (EC_POINT_mul(ctx->group, sG, NULL, ctx->G, sig->s, ctx->bn_ctx) == 0) {
+        return -1;
+    }
+
+    unsigned char h1_buf[33 + 33 + 32];
+    if (hash((unsigned char*)&h1_buf + 66, msg, len) == 0) {
+        return -1;
+    }
+    
+    if (EC_POINT_point2oct(ctx->group,
+                          pubkey->A,
+                          POINT_CONVERSION_COMPRESSED,
+                          (unsigned char*)&h1_buf,
+                          33,
+                          ctx->bn_ctx) != 33) {
+        return -1;
+    }
+
+    if (EC_POINT_point2oct(ctx->group, 
+                          sig->R, 
+                          POINT_CONVERSION_COMPRESSED, 
+                          (unsigned char*)&h1_buf + 33, 
+                          33,
+                          ctx->bn_ctx) != 33) {
+        return -1;
+    }
+
+    unsigned char h1[32];
+    if (hash((unsigned char*)&h1, (unsigned char*)&h1_buf, 33+33+32) == 0) {
+        return -1;
+    }
+
+    tmp = BN_new();
+    if (tmp == NULL) {
+        return -1;
+    }
+
+    if (BN_bin2bn((unsigned char*)&h1, 32, tmp) == NULL) {
+        return -1;
+    }
+
+    HX = EC_POINT_new(ctx->group);
+    if (HX == NULL) {
+        return -1;
+    }
+
+    if (EC_POINT_mul(ctx->group, HX, NULL, pubkey->A, tmp, ctx->bn_ctx) == 0) {
+        return -1;
+    }
+
+    if (EC_POINT_add(ctx->group, HX, HX, sig->R, ctx->bn_ctx) == 0) {
+        return -1;
+    }
+
+    printf("\nxmusig_verify pubkey->A: %s\n", EC_POINT_point2hex(ctx->group, pubkey->A, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+    printf("xmusig_verify pubkey->R: %s\n", EC_POINT_point2hex(ctx->group, pubkey->R, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+    printf("xmusig_verify sig->s: %s\n", BN_bn2hex(sig->s));
+    printf("xmusig_verify sig->R: %s\n", EC_POINT_point2hex(ctx->group, sig->R, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+    printf("xmusig_verify sG: %s\n", EC_POINT_point2hex(ctx->group, sG, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+    printf("xmusig_verify HX: %s\n", EC_POINT_point2hex(ctx->group, HX, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+
+    const int res = EC_POINT_cmp(ctx->group, HX, sG, ctx->bn_ctx);
+    switch(res) {
+        case 0:
+            break;
+        case 1:
+            return -1;
+        default:
+            return -1;
+    }
+
+    error = 1;
+
+    EC_POINT_free(sG);
+    EC_POINT_free(HX);
+    BN_free(tmp);
+
+    return error;
+}
+
+
 std::string CryptoKernel::Schnorr::getPublicKey() {
     if (key != NULL) {
         unsigned int buf_len = 33;
         unsigned char *buf;
         buf = new unsigned char[buf_len];
+
+        printf("\nget pub->A: %s\n", EC_POINT_point2hex(ctx->group, key->pub->A, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+        printf("get pub->R: %s\n", EC_POINT_point2hex(ctx->group, key->pub->R, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
 
         if (EC_POINT_point2oct(
                 ctx->group,
@@ -184,6 +303,8 @@ std::string CryptoKernel::Schnorr::getPrivateKey() {
 bool CryptoKernel::Schnorr::setPublicKey(const std::string& publicKey) {
     const std::string decodedKey = base64_decode(publicKey);
 
+
+
     if (!EC_POINT_oct2point(
             ctx->group,
             key->pub->A,
@@ -192,6 +313,10 @@ bool CryptoKernel::Schnorr::setPublicKey(const std::string& publicKey) {
             ctx->bn_ctx)) {
         return false;
     }
+
+    printf("\nset pub->A: %s\n", EC_POINT_point2hex(ctx->group, key->pub->A, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+    printf("set pub->R: %s\n", EC_POINT_point2hex(ctx->group, key->pub->R, POINT_CONVERSION_COMPRESSED, ctx->bn_ctx));
+
     return true;
 }
 
